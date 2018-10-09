@@ -178,6 +178,82 @@ static bool webKitMediaOpenCDMDecryptorAttemptToDecryptWithLocalInstance(WebKitM
     return webKitMediaOpenCDMDecryptorResetSessionFromInitDataIfNeeded(self, initData) != InvalidSession;
 }
 
+#ifdef USE_OPENCDM_BCM_NEXUS_SVP
+
+#include <b_secbuf.h>
+#include <gst_brcm_svp_meta.h>
+
+struct Rpc_Secbuf_Info {
+    uint32_t type;
+    size_t   size;
+    void    *token;
+    uint32_t subsamples_count;
+    uint32_t subsamples[]; // array of twice size of subsamples
+};
+
+static const uint8_t bpiff_nal[] = {0x00, 0x00, 0x00, 0x01};
+
+static void gst_add_svp_meta_data(GstBuffer* gstBuffer, uint8_t* pOpaqueData, uint32_t cbData, guint subSampleCount, GstByteReader* reader, unsigned int type)
+{
+    brcm_svp_meta_data_t *  ptr         = (brcm_svp_meta_data_t *) g_malloc(sizeof(brcm_svp_meta_data_t));
+    svp_chunk_info *        ci          = NULL;
+    guint16                 nBytesClear = 0;
+    guint32                 nBytesEncrypted = 0;
+
+    if (ptr)
+    {
+        if (reader != nullptr) {
+            // Reset reader position
+            gst_byte_reader_set_pos(reader, 0);
+        }
+
+        memset((uint8_t *)ptr, 0, sizeof(brcm_svp_meta_data_t));
+        if (type == GST_META_BRCM_SVP_TYPE_1) {
+            ptr->sub_type = GST_META_BRCM_SVP_TYPE_1;
+            ptr->u.u1.secbuf_ptr = reinterpret_cast<unsigned int>(pOpaqueData);
+        } else {
+            // Set up SVP meta data.
+            ptr->sub_type = GST_META_BRCM_SVP_TYPE_2;
+            ptr->u.u2.secbuf_ptr = reinterpret_cast<unsigned int>(pOpaqueData);
+            ptr->u.u2.chunks_cnt = subSampleCount;
+            //printf("%s  secure data = %p user buff size %d chunks = %d\n", __FUNCTION__, ptr->u.u2.secbuf_ptr, cbData, ptr->u.u2.chunks_cnt);
+            if (subSampleCount)
+            {
+                ci = (svp_chunk_info *)g_malloc(subSampleCount * sizeof(svp_chunk_info));
+                ptr->u.u2.chunk_info = ci;
+                for (guint i = 0; i < subSampleCount; i++)
+                {
+                    if (!gst_byte_reader_get_uint16_be(reader, &nBytesClear)
+                            || !gst_byte_reader_get_uint32_be(reader, &nBytesEncrypted))
+                    {
+                        // fail
+                        printf("%s ---- ERROR ----  Failed to acquire subsample data at index %d (%d, %d)\n",
+                                __FUNCTION__, i, nBytesClear, nBytesEncrypted);
+                        break;
+                    }
+                    ci[i].clear_size = nBytesClear;
+                    ci[i].encrypted_size = nBytesEncrypted;
+                    printf("%s chunk %d clear size %d encrypted size %d\n", __FUNCTION__, i, ci[i].clear_size, ci[i].encrypted_size);
+                }
+            }
+            else {
+                // the SVP data is the whole buffer
+                ptr->u.u2.chunks_cnt = 1;
+                ci = (svp_chunk_info *)g_malloc( sizeof(svp_chunk_info));
+                ptr->u.u2.chunk_info = ci;
+                ci[0].clear_size = 0;
+                ci[0].encrypted_size = cbData;
+                printf("%s single buffer -> clear size %d encrypted size %d\n", __FUNCTION__, ci[0].clear_size, ci[0].encrypted_size);
+            }
+        }
+    }
+    gst_buffer_add_brcm_svp_meta(gstBuffer, ptr);
+
+    return;
+}
+
+#endif
+
 static bool webKitMediaOpenCDMDecryptorDecrypt(WebKitMediaCommonEncryptionDecrypt* self, GstBuffer* keyIDBuffer, GstBuffer* ivBuffer, GstBuffer* buffer, unsigned subSampleCount, GstBuffer* subSamplesBuffer)
 {
     WebKitOpenCDMDecryptPrivate* priv = GST_WEBKIT_OPENCDM_DECRYPT_GET_PRIVATE(self);
@@ -203,10 +279,30 @@ static bool webKitMediaOpenCDMDecryptorDecrypt(WebKitMediaCommonEncryptionDecryp
     }
 
     int errorCode;
+#ifdef USE_OPENCDM_BCM_NEXUS_SVP
+    B_Secbuf_Info   BsecureBufferInfo;
+    void *pOpaqueData;
+
+    // if there is no subsample, only allocate one region for clear+enc, otherwise, number of subsamples
+    uint32_t rpcSubSampleTotalSize = (subSampleCount ? (subSampleCount*2) : 2) * sizeof(uint32_t);
+    uint32_t sizeOfRPCInfo = sizeof(struct Rpc_Secbuf_Info) + rpcSubSampleTotalSize;
+    Rpc_Secbuf_Info *RPCsecureBufferInfo = reinterpret_cast<struct Rpc_Secbuf_Info*>(malloc(sizeOfRPCInfo));
+
+    B_Secbuf_Alloc(mappedBuffer.size(), B_Secbuf_Type_eSecure, &pOpaqueData);
+    B_Secbuf_GetBufferInfo(pOpaqueData, &BsecureBufferInfo);
+
+    RPCsecureBufferInfo->type = BsecureBufferInfo.type;
+    RPCsecureBufferInfo->size = BsecureBufferInfo.size;
+    RPCsecureBufferInfo->token = BsecureBufferInfo.token;
+#endif
+
     if (subSamplesBuffer) {
         GstMappedBuffer mappedSubSamples(subSamplesBuffer, GST_MAP_READ);
         if (!mappedSubSamples) {
             GST_ERROR_OBJECT(self, "Failed to map subsample buffer");
+#ifdef USE_OPENCDM_BCM_NEXUS_SVP
+            free(RPCsecureBufferInfo);
+#endif
             return false;
         }
 
@@ -230,6 +326,10 @@ static bool webKitMediaOpenCDMDecryptorDecrypt(WebKitMediaCommonEncryptionDecryp
         for (position = 0; position < subSampleCount; position++) {
             gst_byte_reader_get_uint16_be(reader.get(), &inClear);
             gst_byte_reader_get_uint32_be(reader.get(), &inEncrypted);
+#ifdef USE_OPENCDM_BCM_NEXUS_SVP
+            RPCsecureBufferInfo->subsamples[position] = static_cast<uint32_t>(inClear);
+            RPCsecureBufferInfo->subsamples[position+1] = inEncrypted;
+#endif
             memcpy(encryptedData, mappedBuffer.data() + index + inClear, inEncrypted);
             index += inClear + inEncrypted;
             encryptedData += inEncrypted;
@@ -238,6 +338,24 @@ static bool webKitMediaOpenCDMDecryptorDecrypt(WebKitMediaCommonEncryptionDecryp
 
         // Decrypt cipher.
         GST_TRACE_OBJECT(self, "decrypting (subsample)");
+#ifdef USE_OPENCDM_BCM_NEXUS_SVP
+
+        B_Secbuf_ImportData(pOpaqueData, 0, (uint8_t*)bpiff_nal, sizeof(bpiff_nal), 0);
+        B_Secbuf_ImportData(pOpaqueData, sizeof(bpiff_nal), mappedBuffer.data()+sizeof(bpiff_nal), mappedBuffer.size()-sizeof(bpiff_nal), 0);
+        B_Secbuf_ImportData(pOpaqueData, 0, NULL, 0, 1);
+
+        RPCsecureBufferInfo->subsamples_count = subSampleCount * 2; // in order of clear+enc+clear+enc ...
+
+        if ((errorCode = priv->m_openCdm->Decrypt(reinterpret_cast<uint8_t*>(RPCsecureBufferInfo), sizeOfRPCInfo, mappedIV.data(), static_cast<uint32_t>(mappedIV.size()), mappedKeyID.size(), mappedKeyID.data(), WEBCORE_GSTREAMER_EME_LICENSE_KEY_RESPONSE_TIMEOUT.millisecondsAs<uint32_t>()))) {
+            GST_ERROR_OBJECT(self, "packet decryption failed: %d", errorCode);
+            free(RPCsecureBufferInfo);
+            return false;
+        }
+
+        gst_add_svp_meta_data(buffer, reinterpret_cast<uint8_t*>(pOpaqueData), BsecureBufferInfo.size, subSampleCount, reader.get(), GST_META_BRCM_SVP_TYPE_1);
+
+        free(RPCsecureBufferInfo);
+#else
         if ((errorCode = priv->m_openCdm->Decrypt(holdEncryptedData.get(), static_cast<uint32_t>(totalEncrypted), mappedIV.data(), static_cast<uint32_t>(mappedIV.size()), mappedKeyID.size(), mappedKeyID.data(), WEBCORE_GSTREAMER_EME_LICENSE_KEY_RESPONSE_TIMEOUT.millisecondsAs<uint32_t>()))) {
             GST_ERROR_OBJECT(self, "subsample decryption failed, error code %d", errorCode);
             return false;
@@ -255,13 +373,32 @@ static bool webKitMediaOpenCDMDecryptorDecrypt(WebKitMediaCommonEncryptionDecryp
             index += inEncrypted;
             total += inClear + inEncrypted;
         }
+#endif
     } else {
         GST_TRACE_OBJECT(self, "decrypting (no subsamples)");
 
+#ifdef USE_OPENCDM_BCM_NEXUS_SVP
+        B_Secbuf_ImportData(pOpaqueData, 0, mappedBuffer.data(), mappedBuffer.size(), 1);
+
+        RPCsecureBufferInfo->subsamples[0] = 0; // no clear
+        RPCsecureBufferInfo->subsamples[1] = mappedBuffer.size(); // all encrypted
+        RPCsecureBufferInfo->subsamples_count = 2; // one pair of clear_enc
+
+        if ((errorCode = priv->m_openCdm->Decrypt(reinterpret_cast<uint8_t*>(RPCsecureBufferInfo), sizeOfRPCInfo, mappedIV.data(), static_cast<uint32_t>(mappedIV.size()), mappedKeyID.size(), mappedKeyID.data(), WEBCORE_GSTREAMER_EME_LICENSE_KEY_RESPONSE_TIMEOUT.millisecondsAs<uint32_t>()))) {
+            GST_ERROR_OBJECT(self, "packet decryption failed: %d", errorCode);
+            free(RPCsecureBufferInfo);
+            return false;
+        }
+
+        gst_add_svp_meta_data(buffer, reinterpret_cast<uint8_t*>(pOpaqueData), BsecureBufferInfo.size, 0, nullptr, GST_META_BRCM_SVP_TYPE_1);
+
+        free(RPCsecureBufferInfo);
+#else
         if ((errorCode = priv->m_openCdm->Decrypt(mappedBuffer.data(), static_cast<uint32_t>(mappedBuffer.size()), mappedIV.data(), static_cast<uint32_t>(mappedIV.size()), mappedKeyID.size(), mappedKeyID.data(), WEBCORE_GSTREAMER_EME_LICENSE_KEY_RESPONSE_TIMEOUT.millisecondsAs<uint32_t>()))) {
             GST_ERROR_OBJECT(self, "decryption failed, error code %d", errorCode);
             return false;
         }
+#endif
     }
 
     return true;

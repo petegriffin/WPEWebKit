@@ -47,7 +47,7 @@ if (ENABLE_VIDEO OR ENABLE_WEB_AUDIO)
       find_package(LibGcrypt REQUIRED)
       if (ENABLE_OPENCDM)
         find_package(OpenCDM REQUIRED)
-        add_definitions(-DUSE_OPENCDM=1)
+        add_definitions(-DUSE_OPENCDM=1 ${OPENCDM_DEFINITIONS})
       endif()
     endif ()
 
