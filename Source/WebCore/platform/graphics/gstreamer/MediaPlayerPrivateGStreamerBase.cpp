@@ -1248,8 +1248,17 @@ static void setRectangleToVideoSink(GstElement* videoSink, const IntRect& rect, 
     if (!videoSink || (isSuspended && !changeSuspensionState))
         return;
 
+#if USE(WESTEROS_SINK)
     GUniquePtr<gchar> rectString(g_strdup_printf("%d,%d,%d,%d", rect.x(), rect.y(), rect.width(), rect.height()));
     g_object_set(videoSink, "rectangle", rectString.get(), nullptr);
+#endif
+
+#if USE(WAYLAND_SINK)
+    //NXP waylandsink supports window-height & window-width properties
+    GST_INFO("WAYLAND_SINK: set window-width & window-height");
+    g_object_set(videoSink, "window-width", rect.width(), nullptr);
+    g_object_set(videoSink, "window-height", rect.height(), nullptr);
+#endif
 }
 
 class GStreamerHolePunchClient : public TextureMapperPlatformLayerBuffer::HolePunchClient {
@@ -1266,6 +1275,14 @@ GstElement* MediaPlayerPrivateGStreamerBase::createHolePunchVideoSink()
     GRefPtr<GstElementFactory> westerosfactory = adoptGRef(gst_element_factory_find("westerossink"));
     GstElement* videoSink = gst_element_factory_create(westerosfactory.get(), "WesterosVideoSink");
     g_object_set(G_OBJECT(videoSink), "zorder", 0.0f, nullptr);
+    return videoSink;
+#endif
+
+#if USE(WAYLAND_SINK)
+    GST_INFO("MediaPlayerPrivateGStreamerBase::createHolePunchVideoSink() use WAYLAND_SINK");
+    GRefPtr<GstElementFactory> waylandsinkfactory = adoptGRef(gst_element_factory_find("waylandsink"));
+    GstElement* videoSink = gst_element_factory_create(waylandsinkfactory.get(), "waylandsink");
+    //g_object_set(G_OBJECT(videoSink), "zorder", 0.0f, nullptr);
     return videoSink;
 #endif
 
@@ -1311,9 +1328,7 @@ GstElement* MediaPlayerPrivateGStreamerBase::createVideoSink()
     m_videoSink = gst_element_factory_make( "brcmvideosink", nullptr);
 #endif
 
-#if USE(WAYLAND_SINK)
-    m_videoSink = gst_element_factory_make( "waylandsink", nullptr);
-#elif USE(GSTREAMER_GL)
+#if USE(GSTREAMER_GL)
     if (m_renderingCanBeAccelerated)
         m_videoSink = createVideoSinkGL();
 #endif
