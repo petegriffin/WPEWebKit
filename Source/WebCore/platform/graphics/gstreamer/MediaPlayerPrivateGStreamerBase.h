@@ -290,6 +290,11 @@ protected:
 
     ImageOrientation m_videoSourceOrientation;
 
+#if USE(WAYLAND_SINK)
+    void *m_nativeDisplayHandle;
+    void *m_parentSurface;
+#endif
+
 #if ENABLE(ENCRYPTED_MEDIA)
     RefPtr<const CDMInstance> m_cdmInstance;
 #endif

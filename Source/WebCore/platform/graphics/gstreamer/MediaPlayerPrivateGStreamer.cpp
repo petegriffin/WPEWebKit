@@ -83,6 +83,14 @@
 #include "AudioSourceProviderGStreamer.h"
 #endif
 
+#if USE(WAYLAND_SINK)
+#include "PlatformDisplayWPE.h"
+#include <wpe-rdk-1.0/wpe/compositorclient-get-surface.h>
+#include <wpe/wpe-egl.h>
+#include <gst/video/videooverlay.h>
+
+#endif
+
 GST_DEBUG_CATEGORY_EXTERN(webkit_media_player_debug);
 #define GST_CAT_DEFAULT webkit_media_player_debug
 
@@ -169,6 +177,17 @@ MediaPlayerPrivateGStreamer::MediaPlayerPrivateGStreamer(MediaPlayer* player)
 {
 #if USE(GLIB)
     m_readyTimerHandler.setPriority(G_PRIORITY_DEFAULT_IDLE);
+#endif
+
+#if USE(WAYLAND_SINK)
+    //Used to receive parent wayland surface
+    auto& sharedDisplay = PlatformDisplay::sharedDisplay();
+    if (is<PlatformDisplayWPE>(sharedDisplay)) {
+        m_parentSurface = wpe_compositorclient_get_parent_surface(downcast<PlatformDisplayWPE>(sharedDisplay).backend());
+        GST_DEBUG("wayland-sink: m_parentSurface = %p", m_parentSurface);
+        m_nativeDisplayHandle = wpe_renderer_backend_egl_get_native_display(downcast<PlatformDisplayWPE>(sharedDisplay).backend());
+        GST_DEBUG("wayland-sink: m_nativeDisplay = %p", m_nativeDisplayHandle);
+    }
 #endif
 }
 
