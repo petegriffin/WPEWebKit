@@ -136,6 +136,10 @@ if (USE_WPEWEBKIT_BACKEND_BCM_NEXUS_WAYLAND)
     find_package(Wayland REQUIRED)
 endif(USE_WPEWEBKIT_BACKEND_BCM_NEXUS_WAYLAND)
 
+if (USE_WAYLAND_SINK)
+    find_package(WPEBackend-rdk REQUIRED)
+endif(USE_WAYLAND_SINK)
+
 if (ENABLE_ACCELERATED_2D_CANVAS)
     find_package(CairoGL 1.10.2 REQUIRED COMPONENTS cairo-egl)
 endif ()
