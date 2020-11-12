@@ -1304,6 +1304,15 @@ GstElement* MediaPlayerPrivateGStreamerBase::createHolePunchVideoSink()
     return videoSink;
 #endif
 
+#if USE(WAYLAND_SINK)
+    GST_INFO("wayland-sink: Creating waylandsink videoSink");
+    GRefPtr<GstElementFactory> waylandsinkfactory = adoptGRef(gst_element_factory_find("waylandsink"));
+    GstElement* videoSink = gst_element_factory_create(waylandsinkfactory.get(), "waylandsink");
+    //set alpha so GUI is visible (NOTE alpha is a NXP specific waylandsink property)
+    g_object_set(G_OBJECT(videoSink), "alpha", 0.5f, nullptr);
+    return videoSink;
+#endif
+
     // Returning nullptr means relying on autovideosink.
     return nullptr;
 }
@@ -1346,9 +1355,7 @@ GstElement* MediaPlayerPrivateGStreamerBase::createVideoSink()
     m_videoSink = gst_element_factory_make( "brcmvideosink", nullptr);
 #endif
 
-#if USE(WAYLAND_SINK)
-    m_videoSink = gst_element_factory_make( "waylandsink", nullptr);
-#elif USE(GSTREAMER_GL)
+#if USE(GSTREAMER_GL)
     if (m_renderingCanBeAccelerated)
         m_videoSink = createVideoSinkGL();
 #endif
