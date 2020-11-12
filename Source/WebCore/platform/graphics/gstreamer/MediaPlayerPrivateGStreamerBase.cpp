@@ -434,15 +434,44 @@ void MediaPlayerPrivateGStreamerBase::clearSamples()
     m_sample = nullptr;
 }
 
+#define GST_WAYLAND_DISPLAY_HANDLE_CONTEXT_TYPE "GstWaylandDisplayHandleContextType"
+
 bool MediaPlayerPrivateGStreamerBase::handleSyncMessage(GstMessage* message)
 {
     UNUSED_PARAM(message);
+
+#if USE(WAYLAND_SINK) && USE(GSTREAMER_HOLEPUNCH)
+    //handle prepare-window-handle message here so waylandsink doesn't create its own top level window
+    if (gst_is_video_overlay_prepare_window_handle_message (message)) {
+        GST_DEBUG("wpewebkit: wayland-sink: handle gst_is_video_overlay_prepare_window_handle_message prepare-window-handle");
+        // GST_MESSAGE_SRC (message) will be the video sink element
+        m_gstVideoOverlay = GST_VIDEO_OVERLAY (GST_MESSAGE_SRC (message));
+        gst_video_overlay_set_window_handle (m_gstVideoOverlay.get(), (guintptr)m_parentSurface);
+
+        //TODO fixme set a size so 0,0,10,10 (x,y,w,h) so we don't error on <waylandsink> error: Window has no size set
+        //the holePunchClient will update the GstOverlay render-rect with the correct size
+        gst_video_overlay_set_render_rectangle(m_gstVideoOverlay.get(), 0, 0, 10, 10);
+        return true;
+    }
+#endif //USE(WAYLAND_SINK)
+
     if (GST_MESSAGE_TYPE(message) != GST_MESSAGE_NEED_CONTEXT)
         return false;
 
     const gchar* contextType;
+    GstContext *displayContext;
     gst_message_parse_context_type(message, &contextType);
     GST_DEBUG_OBJECT(pipeline(), "Handling %s need-context message for %s", contextType, GST_MESSAGE_SRC_NAME(message));
+
+#if USE(WAYLAND_SINK) && USE(GSTREAMER_HOLEPUNCH)
+    if (!g_strcmp0 (contextType, GST_WAYLAND_DISPLAY_HANDLE_CONTEXT_TYPE)) {
+        displayContext = gst_context_new (GST_WAYLAND_DISPLAY_HANDLE_CONTEXT_TYPE, TRUE);
+        gst_structure_set (gst_context_writable_structure (displayContext), "handle", G_TYPE_POINTER, m_nativeDisplayHandle, NULL);
+        gst_element_set_context (GST_ELEMENT (GST_MESSAGE_SRC (message)), displayContext);
+        GST_DEBUG("wpewebkit: wayland-sink: Set Wayland display handle context");
+        return true;
+    }
+#endif //USE(WAYLAND_SINK)
 
 #if USE(GSTREAMER_GL)
     GRefPtr<GstContext> elementContext = adoptGRef(requestGLContext(contextType));
