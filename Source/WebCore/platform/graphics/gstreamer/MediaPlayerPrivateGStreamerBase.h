@@ -41,6 +41,8 @@
 #include "NicosiaContentLayerTextureMapperImpl.h"
 #else
 #include "TextureMapperPlatformLayerProxyProvider.h"
+#include "TextureMapperPlatformLayerProxy.h"
+#include "TextureMapperPlatformLayerBuffer.h"
 #endif
 #endif
 
@@ -62,6 +64,17 @@ class VideoTextureCopierGStreamer;
 #if USE(TEXTURE_MAPPER_GL)
 class TextureMapperPlatformLayerProxy;
 #endif
+
+void setRectangleToVideoSink(GstElement* videoSink, const IntRect& rect, bool changeSuspensionState, GstVideoOverlay *overlay);
+
+class GStreamerHolePunchClient : public TextureMapperPlatformLayerBuffer::HolePunchClient {
+public:
+ GStreamerHolePunchClient(GRefPtr<GstElement>&& videoSink, GRefPtr<GstVideoOverlay>&&  videoOverlay) : m_videoSink(WTFMove(videoSink)), m_gstVideoOverlay(WTFMove(videoOverlay)) { };
+    void setVideoRectangle(const IntRect& rect) final { setRectangleToVideoSink(m_videoSink.get(), rect, false, m_gstVideoOverlay.get()); }
+private:
+    GRefPtr<GstElement> m_videoSink;
+    GRefPtr<GstVideoOverlay> m_gstVideoOverlay;
+};
 
 class MediaPlayerPrivateGStreamerBase : public MediaPlayerPrivateInterface, public CanMakeWeakPtr<MediaPlayerPrivateGStreamerBase>
 #if USE(TEXTURE_MAPPER_GL)
@@ -293,6 +306,10 @@ protected:
 #if USE(WAYLAND_SINK)
     void *m_nativeDisplayHandle;
     void *m_parentSurface;
+#endif
+
+#if USE(GSTREAMER_HOLEPUNCH)
+    GRefPtr<GstVideoOverlay> m_gstVideoOverlay;
 #endif
 
 #if ENABLE(ENCRYPTED_MEDIA)

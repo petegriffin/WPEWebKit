@@ -1264,7 +1264,7 @@ void MediaPlayerPrivateGStreamerBase::ensureGLVideoSinkContext()
 #endif // USE(GSTREAMER_GL)
 
 #if USE(GSTREAMER_HOLEPUNCH)
-static void setRectangleToVideoSink(GstElement* videoSink, const IntRect& rect, bool changeSuspensionState)
+void setRectangleToVideoSink(GstElement* videoSink, const IntRect& rect, bool changeSuspensionState, GstVideoOverlay *overlay)
 {
     // Here goes the platform-dependant code to set to the videoSink the size
     // and position of the video rendering window. Mark them unused as default.
@@ -1277,17 +1277,23 @@ static void setRectangleToVideoSink(GstElement* videoSink, const IntRect& rect, 
     if (!videoSink || (isSuspended && !changeSuspensionState))
         return;
 
+#if USE(WESTEROS_SINK)
     GUniquePtr<gchar> rectString(g_strdup_printf("%d,%d,%d,%d", rect.x(), rect.y(), rect.width(), rect.height()));
     g_object_set(videoSink, "rectangle", rectString.get(), nullptr);
+#endif
+
+#if USE(WAYLAND_SINK)
+    //we use GstOverlay interface to set the waylandsink render-rect
+    GUniquePtr<gchar> rectString(g_strdup_printf("<%d,%d,%d,%d>", rect.x(), rect.y(), rect.width(), rect.height()));
+    if (overlay) {
+        GST_DEBUG("wpewebkit: wayland-sink: Calling gst_video_overlay_set_render_rectangle %s", rectString.get());
+        gst_video_overlay_set_render_rectangle(overlay, rect.x(), rect.y(), rect.width(), rect.height());
+    } else {
+        GST_DEBUG("wpewebkit: wayland-sink: GstOverlay is not available yet");
+    }
+#endif
 }
 
-class GStreamerHolePunchClient : public TextureMapperPlatformLayerBuffer::HolePunchClient {
-public:
-    GStreamerHolePunchClient(GRefPtr<GstElement>&& videoSink) : m_videoSink(WTFMove(videoSink)) { };
-    void setVideoRectangle(const IntRect& rect) final { setRectangleToVideoSink(m_videoSink.get(), rect, false); }
-private:
-    GRefPtr<GstElement> m_videoSink;
-};
 
 GstElement* MediaPlayerPrivateGStreamerBase::createHolePunchVideoSink()
 {
@@ -1309,7 +1315,7 @@ void MediaPlayerPrivateGStreamerBase::pushNextHolePunchBuffer()
         {
             LockHolder holder(proxy.lock());
             std::unique_ptr<TextureMapperPlatformLayerBuffer> layerBuffer = std::make_unique<TextureMapperPlatformLayerBuffer>(0, m_size, TextureMapperGL::ShouldNotBlend, GL_DONT_CARE);
-            std::unique_ptr<GStreamerHolePunchClient> holePunchClient = std::make_unique<GStreamerHolePunchClient>(m_videoSink.get());
+            std::unique_ptr<GStreamerHolePunchClient> holePunchClient = std::make_unique<GStreamerHolePunchClient>(m_videoSink.get(), m_gstVideoOverlay.get());
             layerBuffer->setHolePunchClient(WTFMove(holePunchClient));
             proxy.pushNextBuffer(WTFMove(layerBuffer));
         };
@@ -1607,7 +1613,7 @@ void MediaPlayerPrivateGStreamerBase::platformSuspend()
 {
 #if USE(GSTREAMER_HOLEPUNCH)
     // Set an empty rectangle and block updates until resumed.
-    setRectangleToVideoSink(m_videoSink.get(), IntRect(), true);
+    setRectangleToVideoSink(m_videoSink.get(), IntRect(), true, m_gstVideoOverlay.get());
 #endif
 }
 
@@ -1615,7 +1621,7 @@ void MediaPlayerPrivateGStreamerBase::platformResume()
 {
 #if USE(GSTREAMER_HOLEPUNCH)
     // Set an empty rectangle and allow updates.
-    setRectangleToVideoSink(m_videoSink.get(), IntRect(), true);
+    setRectangleToVideoSink(m_videoSink.get(), IntRect(), true, m_gstVideoOverlay.get());
 #endif
 }
 
